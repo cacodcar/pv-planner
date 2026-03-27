@@ -296,3 +296,17 @@ if st.button("Optimize!"):
         "results.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+
+st.subheader("About")
+
+st.markdown(
+    """
+This work was possible due to the generous support provided by the Chicago Education Advocacy Cooperative (ChiEAC).
+
+The back-end is built using Gana, a general purpose algebraic modeling language for multiscale modeling. 
+Refer to the resources on cacodcar.com to understand how to construct and optimize such energy systems models.
+Models of this nature, at scale, can be built using Energia. 
+Both Gana and Energia are open-source and available as python packages.
+"""
+)
