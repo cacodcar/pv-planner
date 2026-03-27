@@ -4,7 +4,8 @@ import numpy as np
 from io import BytesIO
 
 
-def to_excel(dfs):
+def to_excel(dfs: dict[str, pd.DataFrame]) -> bytes:
+    """Converts a dictionary of DataFrames to an Excel file in memory and returns the bytes."""
     output = BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         for name, df in dfs.items():
@@ -13,45 +14,69 @@ def to_excel(dfs):
 
 
 def run_model(
-    dm_fac_vals,
-    pv_fac_vals,
-    pv_cost_vals,
-    battery_cost_vals,
-    prod_cap_max,
-    stg_cap_max,
-    pv_years_val,
-    battery_years_val,
+    demand: list[float],
+    solar_dni: list[float],
+    pv_costs: list[float],
+    battery_costs: list[float],
+    pv_cap_max: float,
+    battery_cap_max: float,
+    pv_life: int,
+    battery_life: int,
 ):
+    """Runs the optimization model
 
+    Args:
+        demand (list[float]): variable demand
+        solar_dni (list[float]): variable solar direct normal irradiance
+        pv_costs (list[float]): pv costs (capital, fixed opex, variable opex)
+        battery_costs (list[float]): battery costs (capital, fixed opex, variable opex)
+        pv_cap_max (float): pv capacity limit
+        battery_cap_max (float): battery capacity limit
+        pv_life (int): pv system lifetime in years
+        battery_life (int): battery system lifetime in years
+
+    Returns:
+        Prg: the optimization model instance (solved)
+    """
     from gana import Prg, I, V, P, inf
 
+    #* Initiate Program
     p = Prg()
 
+    #* Declare Indices
+    # Time
     p.y = I(size=1)
     p.m = I(size=12)
 
+    # Resources
     p.res_cons = I('solar')
     p.res_dem = I('power')
     p.res_stg = I('charge')
     p.res = p.res_cons | p.res_dem | p.res_stg
 
+    # Processes
     p.pro_var = I('pv')
     p.pro_cer = I('li', 'li_d')
     p.pro = p.pro_var | p.pro_cer
 
-    p.dm_fac = P(p.power, p.m, _=dm_fac_vals)
-    max_pv_fac = max(pv_fac_vals)
-    p.pv_fac = P(p.pv, p.m, _=[p / max_pv_fac for p in pv_fac_vals])
+    #* Declare Parameters
+    p.dm_fac = P(p.power, p.m, _=demand)
     p.demand = P(p.power, p.m, _=[1] * 12)
 
+    # normalize solar_dni to get a capacity factor
+    max_pv_fac = max(solar_dni)
+    p.pv_fac = P(p.pv, p.m, _=[p / max_pv_fac for p in solar_dni])
+
+    # Process costs: [capital, fixed opex, variable opex]
     p.capex = P(
         p.pro,
         p.y,
-        _=[pv_cost_vals[0] / pv_years_val, battery_cost_vals[0] / battery_years_val, 0],
+        _=[pv_costs[0] / pv_life, battery_costs[0] / battery_life, 0],
     )
-    p.fopex = P(p.pro, p.y, _=[pv_cost_vals[1], battery_cost_vals[1], 0])
-    p.vopex = P(p.pro, p.y, _=[pv_cost_vals[2], battery_cost_vals[2], 0])
+    p.fopex = P(p.pro, p.y, _=[pv_costs[1], battery_costs[1], 0])
+    p.vopex = P(p.pro, p.y, _=[pv_costs[2], battery_costs[2], 0])
 
+    #* Declare Variables
     p.cap_p = V(p.pro, p.y, tag='nameplate production capacity')
     p.cap_s = V(p.res_stg, p.y, tag='nameplate storage capacity')
     p.sell = V(p.res_dem, p.m, tag='amount of power sold')
@@ -61,23 +86,21 @@ def run_model(
     p.ex_cap = V(p.pro, p.y, tag='capital expenditure')
     p.ex_fop = V(p.pro, p.y, tag='fixed operating expenditure')
     p.ex_vop = V(p.pro, p.y, tag='variable operating expenditure')
-
-    p.con_capmax = p.cap_p(p.pro, p.y) <= prod_cap_max
-    p.con_capstg = p.cap_s(p.charge, p.y) <= stg_cap_max
-    p.con_consmax = p.con(p.res_cons, p.m) <= prod_cap_max * 100
+    
+    #* Write Constraints
+    # Bound constraints
+    p.con_capmax = p.cap_p(p.pro, p.y) <= pv_cap_max
+    p.con_capstg = p.cap_s(p.charge, p.y) <= battery_cap_max
+    p.con_consmax = p.con(p.res_cons, p.m) <= pv_cap_max * 100
     p.con_sell = p.sell(p.power, p.m) >= p.dm_fac(p.power, p.m) * p.demand(p.power, p.m)
 
+    # Streams Generated
     p.con_pv = p.prod(p.pv, p.m) <= p.pv_fac(p.pv, p.m) * p.cap_p(p.pv, p.y)
-
     p.con_prod = p.prod(p.pro_cer, p.m) <= p.cap_p(p.pro_cer, p.y)
     p.con_inv = p.inv(p.charge, p.m) <= p.cap_s(p.charge, p.y)
 
-    p.con_vopex = p.ex_vop(p.pro, p.y) == p.vopex(p.pro, p.y) * sum(
-        p.prod(p.pro, m) for m in p.m
-    )
-    p.con_capex = p.ex_cap(p.pro, p.y) == p.capex(p.pro, p.y) * p.cap_p(p.pro, p.y)
-    p.con_fopex = p.ex_fop(p.pro, p.y) == p.fopex(p.pro, p.y) * p.cap_p(p.pro, p.y)
 
+    # Stream Balances
     p.con_solar = p.prod(p.pv, p.m) == p.con(p.solar, p.m)
     p.con_power = (
         sum(p.prod(i, p.m) for i in p.pro_var)
@@ -94,8 +117,18 @@ def run_model(
         == 0
     )
 
+    # Cost Calculations
+    p.con_vopex = p.ex_vop(p.pro, p.y) == p.vopex(p.pro, p.y) * sum(
+        p.prod(p.pro, m) for m in p.m
+    )
+    p.con_capex = p.ex_cap(p.pro, p.y) == p.capex(p.pro, p.y) * p.cap_p(p.pro, p.y)
+    p.con_fopex = p.ex_fop(p.pro, p.y) == p.fopex(p.pro, p.y) * p.cap_p(p.pro, p.y)
+
+    #* Set Objective
+    # Sum of Costs
     p.o = inf(sum(p.ex_cap) + sum(p.ex_vop) + sum(p.ex_fop))
 
+    #* Optimize
     p.opt()
 
     return p
@@ -110,7 +143,7 @@ Planning your energy needs can be challenging. Residential solar is cool
 and can help you save costs, but how do you know how big your system should be?
 Moreover, there is variability in terms of solar availability, energy demand, and costs.
 
-The ChiEAC Energy Planner is here to help you navigate these complexities 
+The PV Planner is here to help you navigate these complexities 
 and make informed decisions!
 
 This planner answers questions such as: 
@@ -128,6 +161,7 @@ and the costs of installing and operating your system.
 
 st.info("Adjust parameters in the sidebar and click 'Optimize!'.")
 
+# Indices
 months = [
     "Jan",
     "Feb",
