@@ -302,7 +302,7 @@ st.subheader("About")
 
 st.markdown(
     """
-This work was possible due to the generous support provided by the Chicago Education Advocacy Cooperative (ChiEAC).
+This work was possible due to the generous support provided by the [Chicago Education Advocacy Cooperative (ChiEAC)](https://chieac.org/).
 
 The back-end is built using [Gana](https://gana.readthedocs.io/en/latest/), a general purpose algebraic modeling language for multiscale modeling. 
 Refer to the resources on [cacodcar.com](https://www.cacodcar.com) to understand how to construct and optimize such energy systems models.
